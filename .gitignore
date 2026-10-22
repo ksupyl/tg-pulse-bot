@@ -1,0 +1,8 @@
+CLAUDE.md
+.env
+*.db
+*.json
+.venv/
+venv/
+.idea/
+__pycache__/
