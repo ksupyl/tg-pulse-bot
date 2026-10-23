@@ -85,15 +85,21 @@ async def test_all():
         assert basic_group_msg.telegram_link is None, "Basic groups must not get t.me/c links"
         print("[OK] No link for basic groups")
 
-        # 3. Test Forward Finding (matching by text and approximate date)
-        print("[*] Testing find_message_by_forward...")
-        unix_time = int((now - timedelta(hours=3)).timestamp())
-        found = await repo.find_message_by_forward(
-            text="Отличная идея, я подготовлю тесты к субботе.", unix_timestamp=unix_time
-        )
-        assert found is not None, "Message should be found by forward matching"
-        assert found.message_id == 102
-        print(f"[OK] Found message by forward: id={found.message_id}, author={found.user_name}")
+        # 3. Поиск оригинала пересылки: автор + точное время, как их отдаёт forward_origin
+        print("[*] Testing find_forwarded_message...")
+        found = await repo.find_forwarded_message(sent_at=msg2.created_at, user_id=666)
+        assert found is not None and found.message_id == 102, "Must find by user_id + exact date"
+
+        # Автор скрыл пересылки — Telegram даёт только имя
+        found_hidden = await repo.find_forwarded_message(sent_at=msg2.created_at, user_name="Иван")
+        assert found_hidden is not None and found_hidden.message_id == 102, "Must find by user_name"
+
+        # Чужой автор, другое время или автор неизвестен — честно ничего не находим
+        assert await repo.find_forwarded_message(sent_at=msg2.created_at, user_id=555) is None
+        later = msg2.created_at + timedelta(minutes=1)
+        assert await repo.find_forwarded_message(sent_at=later, user_id=666) is None
+        assert await repo.find_forwarded_message(sent_at=msg2.created_at) is None
+        print(f"[OK] Forward lookup: id={found.message_id}, author={found.user_name}; wrong author/time -> None")
 
         # 4. Test User Read State & Unread Summary
         print("[*] Testing user state and unread messages...")

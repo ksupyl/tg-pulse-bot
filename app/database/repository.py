@@ -126,51 +126,44 @@ class MessageRepository:
                 rows = await cursor.fetchall()
                 return [_row_to_message(row) for row in rows]
 
-    async def find_message_by_forward(
+    async def find_forwarded_message(
         self,
-        text: str,
-        unix_timestamp: Optional[int] = None,
+        sent_at: datetime,
+        user_id: Optional[int] = None,
         user_name: Optional[str] = None,
     ) -> Optional[ChatMessage]:
-        """Find original message in buffer by text content and approximate timestamp."""
-        cleaned_text = text.strip()
-        conditions = ["text = ?"]
-        params: List[Any] = [cleaned_text]
+        """Находит в буфере оригинал сообщения, которое пользователь переслал боту.
 
-        if unix_timestamp:
-            target_dt = datetime.fromtimestamp(unix_timestamp, tz=timezone.utc)
-            start_window = _to_db_time(target_dt - timedelta(minutes=5))
-            end_window = _to_db_time(target_dt + timedelta(minutes=5))
-            conditions.append("created_at BETWEEN ? AND ?")
-            params.extend([start_window, end_window])
+        При пересылке из группы Telegram не сообщает ни чат, ни message_id —
+        только автора и точное время отправки (message.forward_origin). По этой паре и ищем:
+        - user_id — если автор не скрывает пересылки (MessageOriginUser.sender_user.id);
+        - user_name — если скрывает (MessageOriginHiddenUser), там есть только имя.
+
+        sent_at должен совпасть до секунды, поэтому слушатель обязан сохранять
+        message.date от Telegram, а не время получения на сервере.
+        Метод НЕ проверяет доступ: бот сам должен убедиться, что пользователь
+        состоит в найденном чате, иначе через пересылку можно подсмотреть чужой.
+        Возвращает None, если автор не указан или сообщения нет в буфере.
+        """
+        # Без автора искать только по времени опасно: в ту же секунду могли писать в любом чате
+        if user_id is not None:
+            author_condition, author_value = "user_id = ?", user_id
+        elif user_name:
+            author_condition, author_value = "user_name = ?", user_name
+        else:
+            return None
 
         query = f"""
         SELECT id, chat_id, chat_title, topic_id, message_id, user_id, user_name, username, text, created_at
         FROM messages
-        WHERE {" AND ".join(conditions)}
-        ORDER BY created_at DESC
+        WHERE {author_condition} AND created_at = ?
+        ORDER BY id DESC
         LIMIT 1
         """
-
         async with get_db_connection(self.db_path) as db:
-            async with db.execute(query, params) as cursor:
+            async with db.execute(query, (author_value, _to_db_time(sent_at))) as cursor:
                 row = await cursor.fetchone()
-                if not row:
-                    # Fallback to loose text matching if exact time window didn't match
-                    fallback_query = """
-                    SELECT id, chat_id, chat_title, topic_id, message_id, user_id, user_name, username, text, created_at
-                    FROM messages
-                    WHERE text = ?
-                    ORDER BY id DESC
-                    LIMIT 1
-                    """
-                    async with db.execute(fallback_query, (cleaned_text,)) as fb_cursor:
-                        row = await fb_cursor.fetchone()
-
-                if not row:
-                    return None
-
-                return _row_to_message(row)
+                return _row_to_message(row) if row else None
 
     # -------------------------------------------------------------
     # User Read State ("What's new?" scenario)

@@ -48,8 +48,13 @@ async def init_db(db_path: Optional[str] = None) -> None:
         CREATE INDEX IF NOT EXISTS idx_messages_created_at 
             ON messages(created_at);
 
-        CREATE INDEX IF NOT EXISTS idx_messages_text_date 
-            ON messages(text, created_at);
+        -- Старый индекс по полному тексту хранил вторую копию всех сообщений.
+        -- CREATE IF NOT EXISTS не удаляет то, что уже лежит в существующей базе, поэтому DROP явно
+        DROP INDEX IF EXISTS idx_messages_text_date;
+
+        -- Для поиска оригинала пересланного сообщения: автор + точное время отправки
+        CREATE INDEX IF NOT EXISTS idx_messages_user_date
+            ON messages(user_id, created_at);
 
         CREATE TABLE IF NOT EXISTS user_chat_state (
             user_id INTEGER NOT NULL,
