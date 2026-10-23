@@ -1,3 +1,12 @@
+"""
+Репозиторий — единственное место с SQL-запросами к буферу сообщений,
+состоянию прочтения и BYOK-ключам.
+
+Бот и Mini App вызывают методы `repository` и получают Pydantic-модели
+из app/database/models.py, ничего не зная про SQLite. Соединение и схема
+таблиц живут в app/database/db.py.
+"""
+
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional, Tuple, Dict, Any
@@ -7,6 +16,48 @@ from app.database.db import get_db_connection
 from app.database.models import ChatMessage, UserChatState
 
 logger = logging.getLogger(__name__)
+
+# Время в SQLite храним текстом в UTC: "2026-10-23 14:05:00".
+# Формат совпадает с CURRENT_TIMESTAMP самого SQLite и правильно сравнивается
+# как обычная строка — на этом держатся TTL-очистка и поиск по времени.
+DB_TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
+
+
+def _to_db_time(dt: datetime) -> str:
+    """Переводит datetime в строку UTC для записи в SQLite.
+
+    Время с любым часовым поясом сначала приводим к UTC, иначе московские 14:00
+    записались бы как 14:00 UTC и TTL-очистка сдвинулась бы на 3 часа.
+    «Голое» время без пояса считаем уже UTC — так его отдаёт сам SQLite.
+    """
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).strftime(DB_TIME_FORMAT)
+
+
+def _from_db_time(value: str) -> datetime:
+    """Читает строку из SQLite обратно в datetime с явным поясом UTC.
+
+    Без .replace(tzinfo=...) получилось бы «голое» время, и первое же сравнение
+    с datetime.now(timezone.utc) упало бы с TypeError.
+    """
+    return datetime.strptime(value, DB_TIME_FORMAT).replace(tzinfo=timezone.utc)
+
+
+def _row_to_message(row: aiosqlite.Row) -> ChatMessage:
+    """Собирает ChatMessage из строки таблицы messages — одно место вместо копипасты в каждом SELECT."""
+    return ChatMessage(
+        id=row["id"],
+        chat_id=row["chat_id"],
+        chat_title=row["chat_title"],
+        topic_id=row["topic_id"],
+        message_id=row["message_id"],
+        user_id=row["user_id"],
+        user_name=row["user_name"],
+        username=row["username"],
+        text=row["text"],
+        created_at=_from_db_time(row["created_at"]),
+    )
 
 
 class MessageRepository:
@@ -21,9 +72,9 @@ class MessageRepository:
     async def save_message(self, msg: ChatMessage) -> bool:
         """Save a new incoming message to the ephemeral buffer. Returns True if inserted."""
         query = """
-        INSERT OR IGNORE INTO messages 
+        INSERT OR IGNORE INTO messages
             (chat_id, chat_title, topic_id, message_id, user_id, user_name, username, text, created_at)
-        VALUES 
+        VALUES
             (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
         async with get_db_connection(self.db_path) as db:
@@ -38,7 +89,7 @@ class MessageRepository:
                     msg.user_name,
                     msg.username,
                     msg.text,
-                    msg.created_at.strftime("%Y-%m-%d %H:%M:%S"),
+                    _to_db_time(msg.created_at),
                 ),
             )
             await db.commit()
@@ -73,23 +124,7 @@ class MessageRepository:
         async with get_db_connection(self.db_path) as db:
             async with db.execute(query, params) as cursor:
                 rows = await cursor.fetchall()
-                return [
-                    ChatMessage(
-                        id=row["id"],
-                        chat_id=row["chat_id"],
-                        chat_title=row["chat_title"],
-                        topic_id=row["topic_id"],
-                        message_id=row["message_id"],
-                        user_id=row["user_id"],
-                        user_name=row["user_name"],
-                        username=row["username"],
-                        text=row["text"],
-                        created_at=datetime.strptime(row["created_at"], "%Y-%m-%d %H:%M:%S")
-                        if isinstance(row["created_at"], str)
-                        else row["created_at"],
-                    )
-                    for row in rows
-                ]
+                return [_row_to_message(row) for row in rows]
 
     async def find_message_by_forward(
         self,
@@ -104,8 +139,8 @@ class MessageRepository:
 
         if unix_timestamp:
             target_dt = datetime.fromtimestamp(unix_timestamp, tz=timezone.utc)
-            start_window = (target_dt - timedelta(minutes=5)).strftime("%Y-%m-%d %H:%M:%S")
-            end_window = (target_dt + timedelta(minutes=5)).strftime("%Y-%m-%d %H:%M:%S")
+            start_window = _to_db_time(target_dt - timedelta(minutes=5))
+            end_window = _to_db_time(target_dt + timedelta(minutes=5))
             conditions.append("created_at BETWEEN ? AND ?")
             params.extend([start_window, end_window])
 
@@ -135,20 +170,7 @@ class MessageRepository:
                 if not row:
                     return None
 
-                return ChatMessage(
-                    id=row["id"],
-                    chat_id=row["chat_id"],
-                    chat_title=row["chat_title"],
-                    topic_id=row["topic_id"],
-                    message_id=row["message_id"],
-                    user_id=row["user_id"],
-                    user_name=row["user_name"],
-                    username=row["username"],
-                    text=row["text"],
-                    created_at=datetime.strptime(row["created_at"], "%Y-%m-%d %H:%M:%S")
-                    if isinstance(row["created_at"], str)
-                    else row["created_at"],
-                )
+                return _row_to_message(row)
 
     # -------------------------------------------------------------
     # User Read State ("What's new?" scenario)
@@ -173,7 +195,7 @@ class MessageRepository:
                     chat_id=row["chat_id"],
                     topic_id=None if row["topic_id"] == 0 else row["topic_id"],
                     last_read_message_id=row["last_read_message_id"],
-                    last_summary_at=datetime.strptime(row["last_summary_at"], "%Y-%m-%d %H:%M:%S")
+                    last_summary_at=_from_db_time(row["last_summary_at"])
                     if row["last_summary_at"]
                     else None,
                 )
@@ -183,7 +205,7 @@ class MessageRepository:
     ) -> None:
         """Update user's last read message ID and summary timestamp."""
         tid = topic_id if topic_id is not None else 0
-        now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        now_str = _to_db_time(datetime.now(timezone.utc))
         query = """
         INSERT INTO user_chat_state (user_id, chat_id, topic_id, last_read_message_id, last_summary_at)
         VALUES (?, ?, ?, ?, ?)
@@ -219,7 +241,7 @@ class MessageRepository:
             return 0  # Cleanup disabled
 
         cutoff_dt = datetime.now(timezone.utc) - timedelta(hours=ttl_hours)
-        cutoff_str = cutoff_dt.strftime("%Y-%m-%d %H:%M:%S")
+        cutoff_str = _to_db_time(cutoff_dt)
         query = "DELETE FROM messages WHERE created_at < ?"
 
         async with get_db_connection(self.db_path) as db:
@@ -236,10 +258,10 @@ class MessageRepository:
     async def get_active_chats_and_topics(self) -> List[Dict[str, Any]]:
         """Get list of all tracked chats and their topics with message counts."""
         query = """
-        SELECT 
-            chat_id, 
-            chat_title, 
-            topic_id, 
+        SELECT
+            chat_id,
+            chat_title,
+            topic_id,
             COUNT(id) as message_count,
             MAX(message_id) as latest_message_id,
             MAX(created_at) as latest_activity
@@ -257,7 +279,7 @@ class MessageRepository:
     # -------------------------------------------------------------
     async def save_user_api_key(self, user_id: int, encrypted_key: str) -> None:
         """Store or update user's encrypted Gemini API key."""
-        now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        now_str = _to_db_time(datetime.now(timezone.utc))
         query = """
         INSERT INTO user_api_keys (user_id, encrypted_key, created_at)
         VALUES (?, ?, ?)

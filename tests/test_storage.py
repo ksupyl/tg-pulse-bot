@@ -75,6 +75,16 @@ async def test_all():
         assert since_msgs[0].telegram_link == "https://t.me/c/1234567890/42/101"
         print(f"[OK] Deep link verified: {since_msgs[0].telegram_link}")
 
+        # Время из базы возвращается с поясом UTC и совпадает с записанным (до секунды)
+        assert since_msgs[0].created_at.tzinfo is not None, "created_at must be timezone-aware"
+        assert since_msgs[0].created_at == msg1.created_at.replace(microsecond=0)
+        print("[OK] created_at round-trip keeps UTC timezone")
+
+        # У обычных групп (не супер-) ссылок на сообщения не бывает
+        basic_group_msg = msg1.model_copy(update={"chat_id": -4001234567})
+        assert basic_group_msg.telegram_link is None, "Basic groups must not get t.me/c links"
+        print("[OK] No link for basic groups")
+
         # 3. Test Forward Finding (matching by text and approximate date)
         print("[*] Testing find_message_by_forward...")
         unix_time = int((now - timedelta(hours=3)).timestamp())

@@ -1,3 +1,10 @@
+"""
+Pydantic-модели данных, которыми обмениваются слои приложения.
+
+Репозиторий (app/database/repository.py) превращает строки SQLite в эти модели,
+а бот и Mini App работают уже с ними, ничего не зная про SQL.
+"""
+
 from datetime import datetime, timezone
 from typing import Optional
 from pydantic import BaseModel, Field
@@ -18,22 +25,21 @@ class ChatMessage(BaseModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
     @property
-    def clean_chat_id(self) -> str:
-        """Strip -100 prefix for Telegram web link generation."""
-        s = str(self.chat_id)
-        if s.startswith("-100"):
-            return s[4:]
-        if s.startswith("-"):
-            return s[1:]
-        return s
+    def telegram_link(self) -> Optional[str]:
+        """Прямая ссылка на сообщение: https://t.me/c/<chat>/<msg> или .../<topic>/<msg>.
 
-    @property
-    def telegram_link(self) -> str:
-        """Generate direct deep link to the message in Telegram."""
-        clean = self.clean_chat_id
+        Работает только для супергрупп (ID начинается с -100): Telegram строит ссылку
+        из ID без этого префикса. У обычных групп ссылок на сообщения нет вообще,
+        поэтому для них возвращаем None, а не URL, который никуда не ведёт.
+        """
+        chat_id = str(self.chat_id)
+        if not chat_id.startswith("-100"):
+            return None
+        clean_chat_id = chat_id.removeprefix("-100")
+        # General-топик (id = 1) открывается обычной ссылкой, без номера топика
         if self.topic_id and self.topic_id > 1:
-            return f"https://t.me/c/{clean}/{self.topic_id}/{self.message_id}"
-        return f"https://t.me/c/{clean}/{self.message_id}"
+            return f"https://t.me/c/{clean_chat_id}/{self.topic_id}/{self.message_id}"
+        return f"https://t.me/c/{clean_chat_id}/{self.message_id}"
 
 
 class UserChatState(BaseModel):
