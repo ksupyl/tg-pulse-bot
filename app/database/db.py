@@ -2,6 +2,7 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncGenerator, Optional
+
 import aiosqlite
 
 from app.config import settings
@@ -42,10 +43,10 @@ async def init_db(db_path: Optional[str] = None) -> None:
             UNIQUE(chat_id, message_id)
         );
 
-        CREATE INDEX IF NOT EXISTS idx_messages_chat_topic_msg 
+        CREATE INDEX IF NOT EXISTS idx_messages_chat_topic_msg
             ON messages(chat_id, topic_id, message_id);
 
-        CREATE INDEX IF NOT EXISTS idx_messages_created_at 
+        CREATE INDEX IF NOT EXISTS idx_messages_created_at
             ON messages(created_at);
 
         -- Старый индекс по полному тексту хранил вторую копию всех сообщений.

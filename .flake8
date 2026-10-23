@@ -1,0 +1,5 @@
+# Отсюда берёт лимит расширение Flake8 в VS Code.
+# Основной линтер проекта — ruff (pyproject.toml), лимиты держим одинаковыми.
+[flake8]
+max-line-length = 120
+exclude = .venv,__pycache__

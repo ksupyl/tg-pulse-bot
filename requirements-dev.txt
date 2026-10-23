@@ -1,0 +1,6 @@
+# Инструменты разработки: pip install -r requirements-dev.txt
+# В Docker-образ бота не попадают — там только requirements.txt
+-r requirements.txt
+pytest>=9.0
+pytest-asyncio>=1.0
+ruff>=0.17

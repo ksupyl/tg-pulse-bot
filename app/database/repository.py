@@ -9,7 +9,8 @@
 
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import List, Optional, Tuple, Dict, Any
+from typing import Any, Dict, List, Optional, Tuple
+
 import aiosqlite
 
 from app.database.db import get_db_connection
