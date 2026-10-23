@@ -1,7 +1,17 @@
 CLAUDE.md
+.claude
+
+# Секреты
 .env
+
+# SQLite: сама база + служебные файлы WAL-режима (-wal, -shm).
+# В них тоже лежат тексты сообщений, поэтому *.db недостаточно.
 *.db
-*.json
+*.db-wal
+*.db-shm
+*.sqlite*
+
+# Окружение и IDE
 .venv/
 venv/
 .idea/

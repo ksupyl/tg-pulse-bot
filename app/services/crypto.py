@@ -1,7 +1,15 @@
-import base64
-import hashlib
+"""
+Шифрование пользовательских API-ключей Gemini (BYOK) через Fernet.
+
+Ключи внешних пользователей лежат в таблице `user_api_keys` только в зашифрованном
+виде (см. app/database/repository.py). Утащив файл базы без ENCRYPTION_KEY,
+злоумышленник увидит лишь строки вида `gAAAAA...`.
+Сам ENCRYPTION_KEY заранее проверяется в app/config.py, поэтому здесь нет никаких
+«запасных» ключей: нет ключа — бот просто не запустится.
+"""
+
 import logging
-from typing import Optional
+
 from cryptography.fernet import Fernet, InvalidToken
 
 from app.config import settings
@@ -9,47 +17,34 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 
-def generate_fernet_key() -> str:
-    """Generate a fresh base64-encoded 32-byte Fernet key."""
-    return Fernet.generate_key().decode("utf-8")
-
-
 class KeyCipher:
-    """Helper for symmetric encryption/decryption of user BYOK Gemini API keys."""
+    """Симметричное шифрование строк одним секретным ключом.
 
-    def __init__(self, key_str: Optional[str] = None):
-        key = key_str or settings.encryption_key
-        if not key:
-            # Fallback to a deterministic key derived from bot_token if encryption_key is unset
-            seed = settings.bot_token or "tg-pulse-bot-default-secret-seed"
-            derived_32_bytes = hashlib.sha256(seed.encode("utf-8")).digest()
-            self._fernet = Fernet(base64.urlsafe_b64encode(derived_32_bytes))
-            logger.warning(
-                "ENCRYPTION_KEY is not set in .env. Using fallback key derived from BOT_TOKEN."
-            )
-        else:
-            try:
-                self._fernet = Fernet(key.encode("utf-8"))
-            except Exception as e:
-                logger.error(f"Invalid ENCRYPTION_KEY provided: {e}. Falling back.")
-                derived_32_bytes = hashlib.sha256(key.encode("utf-8")).digest()
-                self._fernet = Fernet(base64.urlsafe_b64encode(derived_32_bytes))
+    «Симметричное» — значит один и тот же ключ и шифрует, и расшифровывает.
+    Fernet — это AES плюс подпись (HMAC): подделанную или обрезанную строку
+    он не расшифрует в мусор, а честно бросит InvalidToken.
+    """
+
+    def __init__(self, key: str):
+        """Принимает Fernet-ключ (44 символа base64) и готовит шифровальщик."""
+        self._fernet = Fernet(key)
 
     def encrypt(self, plain_text: str) -> str:
-        """Encrypt plain text and return base64-encoded encrypted string."""
-        if not plain_text:
-            return ""
+        """Шифрует строку и возвращает токен Fernet текстом — чтобы положить в колонку TEXT."""
         return self._fernet.encrypt(plain_text.encode("utf-8")).decode("utf-8")
 
-    def decrypt(self, encrypted_text: str) -> Optional[str]:
-        """Decrypt cipher text back to plain text."""
-        if not encrypted_text:
-            return None
+    def decrypt(self, encrypted_text: str) -> str | None:
+        """Расшифровывает токен обратно в строку.
+
+        Возвращает None, если токен не подходит к текущему ENCRYPTION_KEY
+        (ключ сменили или запись повреждена) — тогда пользователю нужно заново сделать /set_key.
+        """
         try:
             return self._fernet.decrypt(encrypted_text.encode("utf-8")).decode("utf-8")
         except InvalidToken:
-            logger.error("Failed to decrypt API key: Invalid token or changed encryption key.")
+            logger.error("Не удалось расшифровать API-ключ: запись повреждена или сменился ENCRYPTION_KEY.")
             return None
 
 
-cipher = KeyCipher()
+# Один экземпляр на всё приложение — так же, как `settings` и `repository`
+cipher = KeyCipher(settings.encryption_key.get_secret_value())
