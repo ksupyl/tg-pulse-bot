@@ -9,3 +9,11 @@ target-version = "py313"
 # E/W — стиль (pycodestyle), F — настоящие ошибки (неиспользуемые импорты, опечатки в именах),
 # I — порядок импортов
 select = ["E", "W", "F", "I"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Корень проекта в sys.path, чтобы `import app...` работал при любом способе запуска pytest
+pythonpath = ["."]
+# async def test_... запускаются сами, без декоратора @pytest.mark.asyncio на каждом
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
